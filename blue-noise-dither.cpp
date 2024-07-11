@@ -7,9 +7,11 @@
 
 constexpr size_t SIZE  = 32;
 constexpr size_t TILES = 1;
-constexpr float  SIGMA = 1.2f;
+constexpr float  SIGMA = 1.5f;
 constexpr int    BOX   = std::ceil(2*SIGMA*SIGMA + 1);
-constexpr float  SAMPLE_DENSITY = 0.25;
+//constexpr float  SAMPLE_DENSITY = 0.5;
+//constexpr float  SAMPLE_DENSITY = 0.1;
+constexpr float  SAMPLE_DENSITY = 0.33;
 
 typedef std::array<std::array<float, 2*BOX+1>, 2*BOX+1> kernel;
 
@@ -66,25 +68,9 @@ float random_grd(float& seed) {
 }
 
 ivec2 random_offset() {
-	//static float seed_x = random_float();
-	//static float seed_y = random_float();
-	static float seed_x = 0.001;
-	static float seed_y = 0.5;
-
-	//float v = random_grd();
-	//float vx = random_grd(seed_x);
-	//float vy = random_grd(seed_y);
-	float vx = random_float();
-	float vy = random_float();
-	//fprintf(stderr, "%.2f, %.2f\n", vx, vy);
-
 	return (ivec2) {
-		/*
-		.x = 0,
-		.y = 0,
-		*/
-		.x = (int)(vx * SIZE),
-		.y = (int)(vy * SIZE),
+		.x = SIZE*random_float(),
+		.y = SIZE*random_float(),
 	};
 }
 
@@ -100,30 +86,38 @@ float vec2_dist(vec2& a, vec2& b) {
 	//return fabs(x) + fabs(y) + fabs(z);
 }
 
+float ivec2_dist(ivec2& a, ivec2& b) {
+	int x = abs(a.x - b.x);
+	int y = abs(a.y - b.y);
+
+	if (x >= SIZE/2) x = SIZE - x;
+	if (y >= SIZE/2) y = SIZE - y;
+
+	return sqrt(x*x + y*y);
+}
+
 //#define SAMPLE_CANDIDATES 8
 //#define NUM_SAMPLES (4*SIZE)
 constexpr size_t SAMPLE_CANDIDATES = 8;
+//constexpr size_t SAMPLE_CANDIDATES = SIZE;
 constexpr size_t NUM_SAMPLES = SAMPLE_DENSITY * (SIZE*SIZE);
-vec2 samples[NUM_SAMPLES];
+ivec2 samples[NUM_SAMPLES];
 unsigned num_samples = 0;
-vec2 next_sample_vec2() {
-	vec2 cur = random_vec2();
+ivec2 next_sample_vec2() {
+	ivec2 cur = random_offset();
 	float dist = 0;
 
 	for (size_t i = 0; i < SAMPLE_CANDIDATES*num_samples + 1; i++) {
-		float avg_dist = 99999;
-		vec2 temp = random_vec2();
+		float min_dist = 99999;
+		ivec2 temp = random_offset();
 
 		for (size_t k = 0; k < num_samples; k++) {
-			//avg_dist += vec2_dist(temp, samples[k]);
-			//avg_dist = std::min(avg_dist, vec2_dist(temp, samples[k]));
-			avg_dist = std::min(avg_dist, vec2_dist(temp, samples[k]));
-			//avg_dist = std::min(avg_dist, fabsf(temp.x - samples[k].x));
+			min_dist = std::min(min_dist, ivec2_dist(temp, samples[k]));
 		}
 
-		if (avg_dist > dist) {
+		if (min_dist > dist) {
 			cur  = temp;
-			dist = avg_dist;
+			dist = min_dist;
 		}
 	}
 
@@ -176,38 +170,19 @@ std::vector<bool> gen_input_image_mitchells() {
 	unsigned ones = 0;
 
 	num_samples = 0;
-	/*
-	for (size_t y = 0; y < SIZE; y++) {
-		for (size_t x = 0; x < SIZE; x++) {
-			bool val = random_float() < SAMPLE_DENSITY;
-			ret.push_back(val);
-			ones += val == true;
-		}
-	}
-	*/
 
 	ret.reserve(SIZE*SIZE);
 	ret.resize(SIZE*SIZE);
 
+	for (size_t i = 0; i < SIZE*SIZE; i++) {
+		ret[i] = 0;
+	}
+
 	for (size_t i = 0; i < NUM_SAMPLES; i++) {
-		vec2 v = next_sample_vec2();
-
-		unsigned x = v.x * SIZE;
-		unsigned y = v.y * SIZE;
-
-		ret[y*SIZE + x] = true;
+		ivec2 v = next_sample_vec2();
+		ret[v.y*SIZE + v.x] = true;
 		ones++;
 	}
-
-	/*
-	// if there are more ones than zeros, flip so there are less
-	if (ones > SIZE*SIZE/2) {
-		fprintf(stderr, "flipping ones, %u %lu", ones, SIZE*SIZE);
-		for (size_t i = 0; i < ret.size(); i++) {
-			ret[i] = !ret[i];
-		}
-	}
-	*/
 
 	return ret;
 }
@@ -257,22 +232,40 @@ float convolve(std::vector<bool>& input, ivec2 pos) {
 	return ret;
 }
 
-ivec2 find_largest_void(std::vector<bool>& input) {
+void gen_energy_map(std::vector<float>& out, std::vector<bool>& input) {
+	for (int y = 0; y < (int)SIZE; y++) {
+		for (int x = 0; x < (int)SIZE; x++) {
+			ivec2 offidx = mod_ivec2({x, y});
+			out[index_ivec2(offidx)] = convolve(input, offidx);
+		}
+	}
+}
+
+ivec2 find_largest_void(std::vector<bool>& input,
+						std::vector<float>& energy_map,
+						ivec2 lastpos)
+{
 	ivec2 ret;
 	ivec2 off = random_offset();
 	float cur = 99999;
+	float dist = 0;
 
 	for (int y = 0; y < (int)SIZE; y++) {
 		for (int x = 0; x < (int)SIZE; x++) {
 			ivec2 offidx = mod_ivec2({.x = off.x + x, .y = off.y + y});
+			//ivec2 offidx = mod_ivec2({x, y});
+			//ivec2 offidx = {x, y};
 			bool v = input[index_ivec2(offidx)];
 
 			if (v == 0) {
-				float phi = convolve(input, offidx);
+				//float phi = convolve(input, offidx);
+				float phi = energy_map[index_ivec2(offidx)];
+				float curdist = ivec2_dist(lastpos, offidx);
 
-				if (phi < cur) {
+				if (phi < cur || ((fabs(phi - cur) < 0.0001) && curdist > dist)) {
 					ret = offidx;
 					cur = phi;
+					dist = curdist;
 				}
 			}
 		}
@@ -281,22 +274,31 @@ ivec2 find_largest_void(std::vector<bool>& input) {
 	return ret;
 }
 
-ivec2 find_largest_cluster(std::vector<bool>& input) {
+ivec2 find_largest_cluster(std::vector<bool>& input,
+                           std::vector<float>& energy_map,
+                           ivec2 lastpos)
+{
 	ivec2 ret;
 	ivec2 off = random_offset();
 	float cur = -1;
+	float dist = 0;
 
 	for (int y = 0; y < (int)SIZE; y++) {
 		for (int x = 0; x < (int)SIZE; x++) {
 			ivec2 offidx = mod_ivec2({.x = off.x + x, .y = off.y + y});
+			//ivec2 offidx = mod_ivec2({x, y});
+			//ivec2 offidx = {x, y};
 			bool v = input[index_ivec2(offidx)];
 
 			if (v == 1) {
-				float phi = convolve(input, offidx);
+				//float phi = convolve(input, offidx);
+				float phi = energy_map[index_ivec2(offidx)];
+				float curdist = ivec2_dist(lastpos, offidx);
 
-				if (phi > cur) {
+				if (phi > cur || ((fabs(phi - cur) < 0.0001) && curdist > dist)) {
 					ret = offidx;
 					cur = phi;
+					dist = curdist;
 				}
 			}
 		}
@@ -311,13 +313,21 @@ bool operator==(const ivec2& a, const ivec2& b) {
 
 std::vector<bool> gen_initial_binary(std::vector<bool>& input) {
 	std::vector<bool> ret;
+	std::vector<float> energies;
 	ivec2 last_removed = {-1, -1};
+	ivec2 last_cluster = { SIZE/2, SIZE/2};
+	ivec2 last_void    = { SIZE/2, SIZE/2};
 
 	ret.insert(ret.end(), input.begin(), input.end());
 
+	energies.reserve(SIZE*SIZE);
+	energies.resize(SIZE*SIZE);
+
 	for (;;) {
-		ivec2 largest_void    = find_largest_void(ret);
-		ivec2 largest_cluster = find_largest_cluster(ret);
+		gen_energy_map(energies, ret);
+
+		ivec2 largest_cluster = last_cluster = find_largest_cluster(ret, energies, last_cluster);
+		ivec2 largest_void    = last_void    = find_largest_void(ret, energies, last_void);
 
 		if (largest_void == last_removed) {
 			ret[index_ivec2(last_removed)] = 1;
@@ -342,8 +352,15 @@ std::vector<bool> gen_initial_binary(std::vector<bool>& input) {
 std::vector<int> gen_dither_matrix(std::vector<bool>& input) {
 	std::vector<bool> prototype;
 	std::vector<int> dither;
+	std::vector<float> energies;
+
+	ivec2 last_cluster = {SIZE/2,  SIZE/2};
+	ivec2 last_void    = {SIZE/2,  SIZE/2};
 
 	dither.resize(input.size());
+
+	energies.reserve(SIZE*SIZE);
+	energies.resize(SIZE*SIZE);
 
 	unsigned ones = 0;
 	int rank = 0;
@@ -357,8 +374,9 @@ std::vector<int> gen_dither_matrix(std::vector<bool>& input) {
 	rank = ones - 1;
 
 	while (rank >= 0) {
-		ivec2 largest_cluster = find_largest_cluster(prototype);
-		size_t idx = index_ivec2(largest_cluster);
+		gen_energy_map(energies, prototype);
+		last_cluster = find_largest_cluster(prototype, energies, last_cluster);
+		size_t idx = index_ivec2(last_cluster);
 
 		prototype[idx] = 0;
 		dither[idx] = rank;
@@ -372,8 +390,9 @@ std::vector<int> gen_dither_matrix(std::vector<bool>& input) {
 	rank = ones;
 
 	while (rank < (int)(SIZE*SIZE)) {
-		ivec2 largest_void = find_largest_void(prototype);
-		size_t idx = index_ivec2(largest_void);
+		gen_energy_map(energies, prototype);
+		last_void = find_largest_void(prototype, energies, last_void);
+		size_t idx = index_ivec2(last_void);
 
 		prototype[idx] = 1;
 		dither[idx] = rank;
@@ -467,9 +486,9 @@ void dump_debug_info(std::vector<int>& image) {
 }
 
 std::vector<int> gen_dither_channel() {
-	//auto input   = gen_input_image_white_noise();
+	auto input   = gen_input_image_white_noise();
 	//auto input   = gen_input_image_grd();
-	auto input   = gen_input_image_mitchells();
+	//auto input   = gen_input_image_mitchells();
 	//dump_bool(input);
 	//return {};
 	auto initial = gen_initial_binary(input);
